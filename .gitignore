@@ -1,0 +1,21 @@
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ / JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Eclipse / VS Code
+.project
+.classpath
+.settings/
+.vscode/
+
+# macOS
+.DS_Store
