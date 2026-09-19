@@ -63,3 +63,11 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+// Run the indicative microbenchmark: ./gradlew benchmark
+tasks.register<JavaExec>("benchmark") {
+    group = "verification"
+    description = "Run the indicative once4k microbenchmark."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.digitalbluebird.once4k.benchmark.BenchmarkKt")
+}
