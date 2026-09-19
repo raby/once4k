@@ -27,4 +27,22 @@ public class JedisRedisCommands(private val jedis: UnifiedJedis) : RedisCommands
     override fun delete(key: String) {
         jedis.del(key)
     }
+
+    override fun compareAndSet(key: String, expected: String, value: String, ttlMillis: Long): Boolean =
+        jedis.eval(CAS_SCRIPT, 1, key, expected, value, ttlMillis.toString()) == 1L
+
+    override fun compareAndDelete(key: String, expected: String): Boolean =
+        jedis.eval(CAD_SCRIPT, 1, key, expected) == 1L
+
+    private companion object {
+        // Set only if the current value still matches our claim; honour PX when ttl > 0. One atomic EVAL.
+        const val CAS_SCRIPT =
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
+                "if tonumber(ARGV[3]) > 0 then redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) " +
+                "else redis.call('SET', KEYS[1], ARGV[2]) end return 1 else return 0 end"
+
+        // Delete only if the current value still matches our claim.
+        const val CAD_SCRIPT =
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) return 1 else return 0 end"
+    }
 }

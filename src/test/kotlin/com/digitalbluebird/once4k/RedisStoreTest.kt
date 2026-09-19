@@ -3,6 +3,7 @@ package com.digitalbluebird.once4k
 import assertk.assertThat
 import assertk.assertions.hasSize
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNotEqualTo
 import assertk.assertions.isNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -39,6 +40,34 @@ private class FakeRedisCommands(private val clock: () -> Long = System::currentT
 
     override fun delete(key: String) {
         map.remove(key)
+    }
+
+    override fun compareAndSet(key: String, expected: String, value: String, ttlMillis: Long): Boolean {
+        expireIfDue(key)
+        var set = false
+        map.compute(key) { _, current -> // atomic per key in ConcurrentHashMap
+            if (current != null && current.value == expected) {
+                set = true
+                Entry(value, expiryAt(ttlMillis))
+            } else {
+                current
+            }
+        }
+        return set
+    }
+
+    override fun compareAndDelete(key: String, expected: String): Boolean {
+        expireIfDue(key)
+        var deleted = false
+        map.compute(key) { _, current ->
+            if (current != null && current.value == expected) {
+                deleted = true
+                null
+            } else {
+                current
+            }
+        }
+        return deleted
     }
 
     private fun expiryAt(ttlMillis: Long) = if (ttlMillis > 0) clock() + ttlMillis else Long.MAX_VALUE
@@ -172,7 +201,7 @@ class RedisStoreTest {
         val store = RedisStore(FakeRedisCommands(clock = { now }), lease = 1000.milliseconds)
 
         // A runner claims the key, then "crashes" without ever succeeding or abandoning.
-        check(store.begin("k") == KeyState.New)
+        check(store.begin("k") is KeyState.New)
         // While the lease still holds, another caller must wait rather than run.
         assertThat(store.begin("k")).isEqualTo(KeyState.InProgress)
 
@@ -180,5 +209,25 @@ class RedisStoreTest {
         val runs = AtomicInteger(0)
         assertThat(Once(store).execute("k") { runs.incrementAndGet(); "recovered" }).isEqualTo("recovered")
         assertThat(runs.get()).isEqualTo(1) // the next caller took the key over and ran it once
+    }
+
+    @Test
+    fun `a taken-over runner is fenced out and cannot clobber the new claim`() {
+        var now = 0L
+        val store = RedisStore(FakeRedisCommands(clock = { now }), lease = 1000.milliseconds)
+
+        val a = store.begin("k") as KeyState.New // runner A claims the key
+        now = 1000 // A's lease lapses; Redis drops the claim
+        val b = store.begin("k") as KeyState.New // caller B takes it over with a fresh token
+        assertThat(b.token).isNotEqualTo(a.token)
+
+        // A "revives" with its stale token: both writes must be fenced out (no-ops).
+        store.succeed("k", a.token, "A-result")
+        store.abandon("k", a.token)
+        assertThat(store.begin("k")).isEqualTo(KeyState.InProgress) // B still owns the in-flight claim
+
+        // B finishes normally; its result is the one everyone sees.
+        store.succeed("k", b.token, "B-result")
+        assertThat(store.begin("k")).isEqualTo(KeyState.Done("B-result"))
     }
 }

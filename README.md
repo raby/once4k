@@ -6,9 +6,9 @@ Wrap a side-effecting operation in `execute(key) { … }` and it runs **once** p
 classic double-tap on a slow network) returns the first result instead of doing the work again, and
 concurrent callers with the same key collapse to a single execution.
 
-> **Status: early / work in progress.** The core executor, an in-memory store (with TTL expiry), a
-> JDBC store, a Redis store, and a Spring `@Idempotent` aspect are in, with concurrency tests. Not yet
-> published to Maven Central.
+> **Status: 0.1.0 on Maven Central; `main` is 0.2.0-SNAPSHOT.** The core executor, an in-memory store
+> (with TTL expiry), JDBC and Redis stores (leased, fence-tokened claims), and a Spring `@Idempotent`
+> aspect, with concurrency tests. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why
 
@@ -67,8 +67,9 @@ reaches. Being honest about the edges:
     so it frees automatically and the next caller takes the key over — a crashed runner no longer
     blocks its key.
   - If an action runs **longer than the claim lease**, another caller may take the key over and run it
-    a second time, so size the lease above your slowest action. Fencing tokens, so a late writer
-    cannot clobber a key that was taken over, are a planned addition.
+    a second time, so size the lease above your slowest action. A taken-over runner is **fenced** — it
+    holds a claim token, and its `succeed` / `abandon` are ignored once the key has moved on — so the
+    action may run twice but its late write can never clobber the new claim's result.
 
 For a side effect that must be exactly-once even across these edges, write the idempotency result in
 the **same transaction** as the effect; the store SPI is shaped to allow that.
@@ -90,8 +91,8 @@ Register `IdempotentAspect` and a `Once` bean, with `@EnableAspectJAutoProxy`. S
 
 `./gradlew jmh` runs the [JMH](https://github.com/openjdk/jmh) microbenchmark in `src/jmh`. A **cache
 hit** — an idempotency check when the key already exists, the common case for a retry or a
-de-duplicated request — measures about **29 ns/op** (JMH average time, 2 forks × 5 iterations, ±2.5),
-roughly **34M checks/sec** with the in-memory store, so the guarantee is essentially free on the hot
+de-duplicated request — measures about **31 ns/op** (JMH average time, 2 forks × 5 iterations, ±1.3),
+roughly **32M checks/sec** with the in-memory store, so the guarantee is essentially free on the hot
 path. (Figures are machine-dependent; these are from a developer laptop.)
 
 ## Building

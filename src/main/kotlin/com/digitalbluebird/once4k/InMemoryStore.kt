@@ -4,6 +4,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 
@@ -26,7 +27,7 @@ public class InMemoryStore(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : IdempotencyStore {
 
-    private class Slot {
+    private class Slot(val token: Long) {
         val future = CompletableFuture<Any?>()
 
         /** When the completed result stops replaying; [Long.MAX_VALUE] while in-flight or never-expiring. */
@@ -36,12 +37,13 @@ public class InMemoryStore(
 
     private val slots = ConcurrentHashMap<String, Slot>()
     private val opsSinceSweep = AtomicInteger(0)
+    private val tokenSeq = AtomicLong(0) // mints a unique claim token per Slot
 
     override fun begin(key: String): KeyState {
         maybeSweep()
         while (true) {
-            val fresh = Slot()
-            val existing = slots.putIfAbsent(key, fresh) ?: return KeyState.New
+            val fresh = Slot(tokenSeq.incrementAndGet())
+            val existing = slots.putIfAbsent(key, fresh) ?: return KeyState.New(FenceToken(fresh.token))
             if (!existing.future.isDone) return KeyState.InProgress
             if (isExpired(existing)) {
                 slots.remove(key, existing) // stale result: drop it and reclaim the key
@@ -55,14 +57,17 @@ public class InMemoryStore(
         }
     }
 
-    override fun succeed(key: String, result: Any?) {
+    override fun succeed(key: String, token: FenceToken, result: Any?) {
         val slot = slots[key] ?: return
+        if (slot.token != token.value) return // the claim was taken over; this write is fenced out
         slot.expiresAt = expiryFrom(clock()) // set before completing, so a racing reader sees it
         slot.future.complete(result)
     }
 
-    override fun abandon(key: String) {
-        slots.remove(key)?.future?.completeExceptionally(AbandonedException())
+    override fun abandon(key: String, token: FenceToken) {
+        val slot = slots[key] ?: return
+        if (slot.token != token.value) return // the claim was taken over; do not disturb it
+        if (slots.remove(key, slot)) slot.future.completeExceptionally(AbandonedException())
     }
 
     override fun await(key: String): AwaitOutcome {

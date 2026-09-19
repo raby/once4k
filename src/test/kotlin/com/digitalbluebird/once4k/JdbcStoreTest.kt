@@ -3,6 +3,7 @@ package com.digitalbluebird.once4k
 import assertk.assertThat
 import assertk.assertions.hasSize
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNotEqualTo
 import assertk.assertions.isNull
 import org.h2.jdbcx.JdbcDataSource
 import java.util.UUID
@@ -158,7 +159,7 @@ class JdbcStoreTest {
         val store = store(lease = 1000.milliseconds, clock = { now })
 
         // A runner claims the key, then "crashes" without ever succeeding or abandoning.
-        check(store.begin("k") == KeyState.New)
+        check(store.begin("k") is KeyState.New)
         // While the lease still holds, another caller must wait rather than run.
         assertThat(store.begin("k")).isEqualTo(KeyState.InProgress)
 
@@ -172,7 +173,7 @@ class JdbcStoreTest {
     fun `many callers race to take over a lapsed claim and it still runs exactly once`() {
         var now = 0L
         val store = store(lease = 1000.milliseconds, clock = { now })
-        check(store.begin("k") == KeyState.New) // a runner claimed the key, then crashed
+        check(store.begin("k") is KeyState.New) // a runner claimed the key, then crashed
         now = 1000 // its lease lapses, so the key is up for takeover
 
         val once = Once(store)
@@ -201,5 +202,25 @@ class JdbcStoreTest {
 
         assertThat(runs.get()).isEqualTo(1) // the guarded UPDATE let exactly one caller take over
         assertThat(results).hasSize(1) // every caller shared that one result
+    }
+
+    @Test
+    fun `a taken-over runner is fenced out and cannot clobber the new claim`() {
+        var now = 0L
+        val store = store(lease = 1000.milliseconds, clock = { now })
+
+        val a = store.begin("k") as KeyState.New // runner A claims the key
+        now = 1000 // A's lease lapses
+        val b = store.begin("k") as KeyState.New // caller B takes it over with a fresh token
+        assertThat(b.token).isNotEqualTo(a.token)
+
+        // A "revives" with its stale token: both writes must be fenced out (no-ops).
+        store.succeed("k", a.token, "A-result")
+        store.abandon("k", a.token)
+        assertThat(store.begin("k")).isEqualTo(KeyState.InProgress) // B still owns the in-flight claim
+
+        // B finishes normally; its result is the one everyone sees.
+        store.succeed("k", b.token, "B-result")
+        assertThat(store.begin("k")).isEqualTo(KeyState.Done("B-result"))
     }
 }

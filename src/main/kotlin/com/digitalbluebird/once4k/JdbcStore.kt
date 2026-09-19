@@ -4,6 +4,7 @@ import java.sql.Connection
 import java.sql.SQLIntegrityConstraintViolationException
 import java.sql.Types
 import javax.sql.DataSource
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
@@ -24,12 +25,14 @@ import kotlin.time.Duration.Companion.seconds
  * key held by another process, up to [awaitTimeout], before reporting [AwaitOutcome.Retry]. [clock]
  * (epoch millis, for expiry) is injectable for testing.
  *
- * The in-progress claim carries a [lease] (default 5 minutes): if a runner dies without finishing, its
- * claim lapses after the lease and the next caller atomically takes the key over, so a crashed runner
- * no longer blocks its key. Size the lease above your slowest action — an action that outruns its lease
- * can be run a second time by a caller that takes over (the double-run window noted in the README's
- * Consistency section), and fencing to make a late writer's result harmless is a planned addition. Set
- * [lease] to [Duration.INFINITE] to disable takeover (an unfinished claim then blocks until cleared).
+ * The in-progress claim carries a [lease] (default 5 minutes) and a fence token: if a runner dies
+ * without finishing, its claim lapses after the lease and the next caller atomically takes the key over
+ * (with a fresh token), so a crashed runner no longer blocks its key. A taken-over runner that later
+ * revives is **fenced** — [succeed] and [abandon] match on the token, so its late write is ignored
+ * rather than clobbering the new claim. Size the lease above your slowest action: an action that
+ * outruns its lease can still be run a second time by the caller that takes over (the double-run window
+ * noted in the README's Consistency section), but it can no longer corrupt the key's state. Set [lease]
+ * to [Duration.INFINITE] to disable takeover (an unfinished claim then blocks until cleared).
  */
 public class JdbcStore(
     private val dataSource: DataSource,
@@ -42,19 +45,25 @@ public class JdbcStore(
     private val decode: (String?) -> Any? = { it },
 ) : IdempotencyStore {
 
-    /** Create the idempotency table if it does not already exist. Safe to call repeatedly. */
+    /**
+     * Create the idempotency table if it does not already exist. Safe to call repeatedly. A table
+     * created by once4k 0.1.x lacks the `token` column added for fencing in 0.2.0; since this only
+     * creates a fresh table, migrate an existing one with
+     * `ALTER TABLE idempotency_keys ADD COLUMN token BIGINT`.
+     */
     public fun initSchema() {
         connection { c ->
             c.prepareStatement(
                 "CREATE TABLE IF NOT EXISTS $TABLE " +
-                    "(id VARCHAR(255) PRIMARY KEY, state VARCHAR(16) NOT NULL, result CLOB, expires_at BIGINT)",
+                    "(id VARCHAR(255) PRIMARY KEY, state VARCHAR(16) NOT NULL, result CLOB, " +
+                    "expires_at BIGINT, token BIGINT)",
             ).use { it.executeUpdate() }
         }
     }
 
     override fun begin(key: String): KeyState {
         while (true) {
-            if (tryClaim(key)) return KeyState.New
+            tryClaim(key)?.let { return KeyState.New(FenceToken(it)) }
 
             // The row exists: read and interpret it.
             val row = readRow(key) ?: continue // vanished (abandoned) between the INSERT and the read
@@ -63,8 +72,8 @@ public class JdbcStore(
                 IN_PROGRESS -> {
                     if (!row.isExpired(now)) return KeyState.InProgress
                     // The claim's lease has lapsed: the runner is presumed dead. Take the key over —
-                    // a guarded UPDATE, so exactly one racing caller wins and the rest see InProgress.
-                    if (reclaim(key, staleExpiresAt = row.expiresAt)) return KeyState.New
+                    // a guarded UPDATE with a fresh token, so exactly one racing caller wins.
+                    reclaim(key, staleExpiresAt = row.expiresAt)?.let { return KeyState.New(FenceToken(it)) }
                     // Lost the takeover race; loop and re-read the winner's fresh row.
                 }
                 DONE -> {
@@ -76,23 +85,25 @@ public class JdbcStore(
         }
     }
 
-    override fun succeed(key: String, result: Any?) {
+    override fun succeed(key: String, token: FenceToken, result: Any?) {
         val expiresAt = if (ttl == Duration.INFINITE) null else clock() + ttl.inWholeMilliseconds
         connection { c ->
-            c.prepareStatement("UPDATE $TABLE SET state = '$DONE', result = ?, expires_at = ? WHERE id = ? AND state = '$IN_PROGRESS'").use { ps ->
+            c.prepareStatement("UPDATE $TABLE SET state = '$DONE', result = ?, expires_at = ? WHERE id = ? AND state = '$IN_PROGRESS' AND token = ?").use { ps ->
                 ps.setString(1, encode(result))
                 if (expiresAt == null) ps.setNull(2, Types.BIGINT) else ps.setLong(2, expiresAt)
                 ps.setString(3, key)
-                ps.executeUpdate()
+                ps.setLong(4, token.value)
+                ps.executeUpdate() // 0 rows if the claim was taken over: the write is fenced out
             }
         }
     }
 
-    override fun abandon(key: String) {
+    override fun abandon(key: String, token: FenceToken) {
         connection { c ->
-            c.prepareStatement("DELETE FROM $TABLE WHERE id = ? AND state = '$IN_PROGRESS'").use { ps ->
+            c.prepareStatement("DELETE FROM $TABLE WHERE id = ? AND state = '$IN_PROGRESS' AND token = ?").use { ps ->
                 ps.setString(1, key)
-                ps.executeUpdate()
+                ps.setLong(2, token.value)
+                ps.executeUpdate() // 0 rows if the claim was taken over: leave the new claim untouched
             }
         }
     }
@@ -121,37 +132,41 @@ public class JdbcStore(
         }
     }
 
-    /** INSERT the claim row; the primary key makes this the atomic gate. Returns whether we won it. */
-    private fun tryClaim(key: String): Boolean = try {
+    /** INSERT the claim row with a fresh token; the primary key is the atomic gate. Returns the token, or null if lost. */
+    private fun tryClaim(key: String): Long? = try {
+        val token = mintToken()
         val leaseExpiresAt = leaseDeadline()
         connection { c ->
-            c.prepareStatement("INSERT INTO $TABLE (id, state, expires_at) VALUES (?, '$IN_PROGRESS', ?)").use { ps ->
+            c.prepareStatement("INSERT INTO $TABLE (id, state, expires_at, token) VALUES (?, '$IN_PROGRESS', ?, ?)").use { ps ->
                 ps.setString(1, key)
                 if (leaseExpiresAt == null) ps.setNull(2, Types.BIGINT) else ps.setLong(2, leaseExpiresAt)
+                ps.setLong(3, token)
                 ps.executeUpdate()
             }
         }
-        true
+        token
     } catch (e: SQLIntegrityConstraintViolationException) {
-        false // another caller already holds this key
+        null // another caller already holds this key
     }
 
     /**
-     * Take over an in-progress claim whose lease lapsed, by resetting its lease to a fresh one. The
-     * `WHERE expires_at = staleExpiresAt` guard makes this atomic: only the caller matching the exact
-     * stale lease wins, so concurrent takers do not both claim it. Returns whether we won.
+     * Take over an in-progress claim whose lease lapsed, resetting its lease and stamping a fresh token.
+     * The `WHERE expires_at = staleExpiresAt` guard makes this atomic: only the caller matching the exact
+     * stale lease wins, so concurrent takers do not both claim it. Returns the new token, or null if lost.
      */
-    private fun reclaim(key: String, staleExpiresAt: Long?): Boolean {
-        if (staleExpiresAt == null) return false // an unleased claim never lapses
+    private fun reclaim(key: String, staleExpiresAt: Long?): Long? {
+        if (staleExpiresAt == null) return null // an unleased claim never lapses
+        val token = mintToken()
         val renewed = leaseDeadline()
         return connection { c ->
             c.prepareStatement(
-                "UPDATE $TABLE SET expires_at = ? WHERE id = ? AND state = '$IN_PROGRESS' AND expires_at = ?",
+                "UPDATE $TABLE SET expires_at = ?, token = ? WHERE id = ? AND state = '$IN_PROGRESS' AND expires_at = ?",
             ).use { ps ->
                 if (renewed == null) ps.setNull(1, Types.BIGINT) else ps.setLong(1, renewed)
-                ps.setString(2, key)
-                ps.setLong(3, staleExpiresAt)
-                ps.executeUpdate() == 1
+                ps.setLong(2, token)
+                ps.setString(3, key)
+                ps.setLong(4, staleExpiresAt)
+                if (ps.executeUpdate() == 1) token else null
             }
         }
     }
@@ -159,6 +174,9 @@ public class JdbcStore(
     /** The lease deadline for a claim taken now, or null when leasing is disabled ([Duration.INFINITE]). */
     private fun leaseDeadline(): Long? =
         if (lease == Duration.INFINITE) null else clock() + lease.inWholeMilliseconds
+
+    /** A fresh, unique-per-claim fence token. Random (not monotonic): the store arbitrates by equality. */
+    private fun mintToken(): Long = Random.nextLong()
 
     private class Row(val state: String, val result: String?, val expiresAt: Long?) {
         fun isExpired(now: Long): Boolean = expiresAt != null && now >= expiresAt

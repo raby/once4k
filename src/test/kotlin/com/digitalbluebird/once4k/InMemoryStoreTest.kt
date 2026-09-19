@@ -2,6 +2,7 @@ package com.digitalbluebird.once4k
 
 import assertk.assertThat
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNotEqualTo
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -70,5 +71,28 @@ class InMemoryStoreTest {
         assertThat(runner.get(5, TimeUnit.SECONDS)).isEqualTo("done")
         assertThat(waiter.get(5, TimeUnit.SECONDS)).isEqualTo("done")
         pool.shutdown()
+    }
+
+    @Test
+    fun `a stale claim token cannot complete a reused key`() {
+        var now = 0L
+        val store = InMemoryStore(ttl = 1000.milliseconds, clock = { now })
+
+        // A claims and completes; its result replays within the TTL.
+        val a = store.begin("k") as KeyState.New
+        store.succeed("k", a.token, "A")
+        assertThat(store.begin("k")).isEqualTo(KeyState.Done("A"))
+
+        // The TTL elapses and B re-claims the same key with a fresh token.
+        now = 1000
+        val b = store.begin("k") as KeyState.New
+        assertThat(b.token).isNotEqualTo(a.token)
+
+        // A "revives" with its old token: fenced out; B still owns the in-flight claim.
+        store.succeed("k", a.token, "A-again")
+        assertThat(store.begin("k")).isEqualTo(KeyState.InProgress)
+
+        store.succeed("k", b.token, "B")
+        assertThat(store.begin("k")).isEqualTo(KeyState.Done("B"))
     }
 }

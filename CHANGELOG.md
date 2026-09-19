@@ -6,6 +6,23 @@ All notable changes to once4k are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Claim fencing:** `begin` mints a `FenceToken` per claim (`KeyState.New(token)`); `succeed` /
+  `abandon` present it and are applied only while the token is still the key's current claim. A runner
+  whose lease lapsed and was taken over can no longer overwrite the new runner's result or delete its
+  live claim (the action may still run twice past the lease, but the key's state stays consistent).
+  Implemented across all three stores; the `RedisCommands` port gains `compareAndSet` /
+  `compareAndDelete` (Lua-backed in the Jedis adapter).
+
+### Changed
+
+- **Breaking (SPI):** `IdempotencyStore.succeed` / `abandon` take a `FenceToken`, and `KeyState.New`
+  carries one — anyone implementing `IdempotencyStore` or `RedisCommands` must update. Hence the minor
+  version bump to 0.2.0.
+- **Breaking (JDBC schema):** `JdbcStore` gains a `token BIGINT` column. `initSchema()` creates it on a
+  fresh table; an existing 0.1.x table needs `ALTER TABLE idempotency_keys ADD COLUMN token BIGINT`.
+
 ## [0.1.0] - 2026-09-19
 
 ### Added

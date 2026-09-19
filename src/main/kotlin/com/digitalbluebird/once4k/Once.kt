@@ -31,7 +31,7 @@ public class Once(private val store: IdempotencyStore) {
         while (true) {
             when (val state = store.begin(key)) {
                 is KeyState.Done -> return state.result as T
-                KeyState.New -> return runClaimed(key, action)
+                is KeyState.New -> return runClaimed(key, state.token, action)
                 KeyState.InProgress -> when (val outcome = store.await(key)) {
                     is AwaitOutcome.Ready -> return outcome.result as T
                     AwaitOutcome.Retry -> {} // the runner released the key; loop and try to claim it
@@ -40,14 +40,14 @@ public class Once(private val store: IdempotencyStore) {
         }
     }
 
-    private fun <T> runClaimed(key: String, action: () -> T): T {
+    private fun <T> runClaimed(key: String, token: FenceToken, action: () -> T): T {
         val result = try {
             action()
         } catch (e: Throwable) {
-            store.abandon(key)
+            store.abandon(key, token)
             throw e
         }
-        store.succeed(key, result)
+        store.succeed(key, token, result)
         return result
     }
 }
