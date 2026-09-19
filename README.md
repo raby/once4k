@@ -6,9 +6,9 @@ Wrap a side-effecting operation in `execute(key) { … }` and it runs **once** p
 classic double-tap on a slow network) returns the first result instead of doing the work again, and
 concurrent callers with the same key collapse to a single execution.
 
-> **Status: early / work in progress.** The core executor, an in-memory store (with TTL expiry) and a
-> JDBC store are in, with concurrency tests. A Redis store and a Spring integration are next. Not yet
-> published.
+> **Status: early / work in progress.** The core executor, an in-memory store (with TTL expiry), a
+> JDBC store and a Redis store are in, with concurrency tests. A Spring integration is next. Not yet
+> published to Maven Central.
 
 ## Why
 
@@ -49,9 +49,13 @@ effect (an advanced pattern the store SPI is designed to allow).
   `INSERT` guarded by the primary key, so concurrent callers on a fresh key resolve to one runner;
   results are stored via a codec (`String` and `null` by default, or supply your own for richer
   types). Call `initSchema()` at startup, and pass a pooled `DataSource`.
+- **`RedisStore`** — idempotency state in Redis, shared across processes and instances. The atomic
+  claim is `SET NX`, and TTL is delegated to Redis. It runs against a small `RedisCommands` port; a
+  `JedisRedisCommands` adapter provides the binding (Jedis is `compileOnly`, so add it only if you
+  use this store).
 
 A store only has to implement the small `IdempotencyStore` SPI (`begin` / `succeed` / `abandon` /
-`await`), so Redis, a distributed cache, or a bespoke backend slots in the same way.
+`await`), so a distributed cache or a bespoke backend slots in the same way.
 
 ## Benchmark
 

@@ -17,6 +17,9 @@ All notable changes to once4k are recorded here. The format follows
 - `JdbcStore`: idempotency state in one table, shared across processes; the atomic claim is an
   `INSERT` guarded by the primary key, in-flight callers poll via `await`, results go through a
   pluggable codec, and completed keys expire by TTL.
+- `RedisStore`: idempotency state in Redis, shared across processes; the atomic claim is `SET NX`,
+  TTL is delegated to Redis, and it runs against a small `RedisCommands` port with a `compileOnly`
+  Jedis adapter (`JedisRedisCommands`).
 - GitHub Actions CI (build + test).
 - Maven Central (Central Portal) publishing configuration — see [PUBLISHING.md](PUBLISHING.md).
 

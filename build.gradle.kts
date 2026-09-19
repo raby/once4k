@@ -52,6 +52,10 @@ kotlin {
 }
 
 dependencies {
+    // Jedis is compileOnly: it backs the optional JedisRedisCommands adapter, but callers who use a
+    // different store (in-memory, JDBC) never pull it in. Add it yourself to use RedisStore with Jedis.
+    compileOnly(libs.jedis)
+
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(kotlin("test-junit5"))
