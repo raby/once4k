@@ -15,6 +15,7 @@ import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 class JdbcStoreTest {
 
@@ -28,10 +29,12 @@ class JdbcStoreTest {
     private fun store(
         ds: DataSource = freshH2(),
         ttl: kotlin.time.Duration = kotlin.time.Duration.INFINITE,
+        lease: kotlin.time.Duration = 5.minutes,
         clock: () -> Long = System::currentTimeMillis,
         encode: (Any?) -> String? = { it as String? },
         decode: (String?) -> Any? = { it },
-    ) = JdbcStore(ds, ttl = ttl, clock = clock, encode = encode, decode = decode).also { it.initSchema() }
+    ) = JdbcStore(ds, ttl = ttl, lease = lease, clock = clock, encode = encode, decode = decode)
+        .also { it.initSchema() }
 
     @Test
     fun `the same key runs once and replays the stored result`() {
@@ -147,5 +150,56 @@ class JdbcStoreTest {
         assertThat(waiter.get(15, TimeUnit.SECONDS)).isEqualTo("recovered")
         runner.get(5, TimeUnit.SECONDS)
         pool.shutdown()
+    }
+
+    @Test
+    fun `a crashed runner's claim is taken over once its lease lapses`() {
+        var now = 0L
+        val store = store(lease = 1000.milliseconds, clock = { now })
+
+        // A runner claims the key, then "crashes" without ever succeeding or abandoning.
+        check(store.begin("k") == KeyState.New)
+        // While the lease still holds, another caller must wait rather than run.
+        assertThat(store.begin("k")).isEqualTo(KeyState.InProgress)
+
+        now = 1000 // the claim's lease lapses
+        val runs = AtomicInteger(0)
+        assertThat(Once(store).execute("k") { runs.incrementAndGet(); "recovered" }).isEqualTo("recovered")
+        assertThat(runs.get()).isEqualTo(1) // the next caller took the key over and ran it once
+    }
+
+    @Test
+    fun `many callers race to take over a lapsed claim and it still runs exactly once`() {
+        var now = 0L
+        val store = store(lease = 1000.milliseconds, clock = { now })
+        check(store.begin("k") == KeyState.New) // a runner claimed the key, then crashed
+        now = 1000 // its lease lapses, so the key is up for takeover
+
+        val once = Once(store)
+        val runs = AtomicInteger(0)
+        val threads = 16
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(threads)
+        val results = ConcurrentHashMap.newKeySet<String>()
+        val pool = Executors.newFixedThreadPool(threads)
+        repeat(threads) {
+            pool.submit {
+                start.await()
+                results.add(
+                    once.execute("k") {
+                        val n = runs.incrementAndGet()
+                        Thread.sleep(50) // widen the race window
+                        "result-$n"
+                    },
+                )
+                done.countDown()
+            }
+        }
+        start.countDown()
+        check(done.await(15, TimeUnit.SECONDS)) { "threads did not finish in time" }
+        pool.shutdown()
+
+        assertThat(runs.get()).isEqualTo(1) // the guarded UPDATE let exactly one caller take over
+        assertThat(results).hasSize(1) // every caller shared that one result
     }
 }

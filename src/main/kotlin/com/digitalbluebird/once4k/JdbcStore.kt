@@ -7,6 +7,7 @@ import javax.sql.DataSource
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -23,12 +24,17 @@ import kotlin.time.Duration.Companion.seconds
  * key held by another process, up to [awaitTimeout], before reporting [AwaitOutcome.Retry]. [clock]
  * (epoch millis, for expiry) is injectable for testing.
  *
- * The in-progress claim is not leased in this version, so a crashed runner's row blocks its key until
- * cleared. See the Consistency section of the README.
+ * The in-progress claim carries a [lease] (default 5 minutes): if a runner dies without finishing, its
+ * claim lapses after the lease and the next caller atomically takes the key over, so a crashed runner
+ * no longer blocks its key. Size the lease above your slowest action — an action that outruns its lease
+ * can be run a second time by a caller that takes over (the double-run window noted in the README's
+ * Consistency section), and fencing to make a late writer's result harmless is a planned addition. Set
+ * [lease] to [Duration.INFINITE] to disable takeover (an unfinished claim then blocks until cleared).
  */
 public class JdbcStore(
     private val dataSource: DataSource,
     private val ttl: Duration = 24.hours,
+    private val lease: Duration = 5.minutes,
     private val clock: () -> Long = System::currentTimeMillis,
     private val awaitTimeout: Duration = 10.seconds,
     private val pollInterval: Duration = 25.milliseconds,
@@ -52,14 +58,18 @@ public class JdbcStore(
 
             // The row exists: read and interpret it.
             val row = readRow(key) ?: continue // vanished (abandoned) between the INSERT and the read
+            val now = clock()
             when (row.state) {
-                IN_PROGRESS -> return KeyState.InProgress
+                IN_PROGRESS -> {
+                    if (!row.isExpired(now)) return KeyState.InProgress
+                    // The claim's lease has lapsed: the runner is presumed dead. Take the key over —
+                    // a guarded UPDATE, so exactly one racing caller wins and the rest see InProgress.
+                    if (reclaim(key, staleExpiresAt = row.expiresAt)) return KeyState.New
+                    // Lost the takeover race; loop and re-read the winner's fresh row.
+                }
                 DONE -> {
-                    if (row.isExpired(clock())) {
-                        deleteExpired(key, row.expiresAt)
-                        continue // reclaim the key on the next loop
-                    }
-                    return KeyState.Done(decode(row.result))
+                    if (!row.isExpired(now)) return KeyState.Done(decode(row.result))
+                    deleteExpired(key, row.expiresAt) // stale result: drop it and reclaim on the next loop
                 }
                 else -> error("unexpected idempotency state '${row.state}' for key '$key'")
             }
@@ -93,7 +103,10 @@ public class JdbcStore(
             val row = readRow(key) ?: return AwaitOutcome.Retry // gone (abandoned): reclaim
             when (row.state) {
                 DONE -> return AwaitOutcome.Ready(decode(row.result))
-                IN_PROGRESS -> Thread.sleep(pollInterval.inWholeMilliseconds)
+                IN_PROGRESS -> {
+                    if (row.isExpired(clock())) return AwaitOutcome.Retry // lease lapsed: go take the key over
+                    Thread.sleep(pollInterval.inWholeMilliseconds)
+                }
                 else -> error("unexpected idempotency state '${row.state}' for key '$key'")
             }
         }
@@ -110,9 +123,11 @@ public class JdbcStore(
 
     /** INSERT the claim row; the primary key makes this the atomic gate. Returns whether we won it. */
     private fun tryClaim(key: String): Boolean = try {
+        val leaseExpiresAt = leaseDeadline()
         connection { c ->
-            c.prepareStatement("INSERT INTO $TABLE (id, state, expires_at) VALUES (?, '$IN_PROGRESS', NULL)").use { ps ->
+            c.prepareStatement("INSERT INTO $TABLE (id, state, expires_at) VALUES (?, '$IN_PROGRESS', ?)").use { ps ->
                 ps.setString(1, key)
+                if (leaseExpiresAt == null) ps.setNull(2, Types.BIGINT) else ps.setLong(2, leaseExpiresAt)
                 ps.executeUpdate()
             }
         }
@@ -120,6 +135,30 @@ public class JdbcStore(
     } catch (e: SQLIntegrityConstraintViolationException) {
         false // another caller already holds this key
     }
+
+    /**
+     * Take over an in-progress claim whose lease lapsed, by resetting its lease to a fresh one. The
+     * `WHERE expires_at = staleExpiresAt` guard makes this atomic: only the caller matching the exact
+     * stale lease wins, so concurrent takers do not both claim it. Returns whether we won.
+     */
+    private fun reclaim(key: String, staleExpiresAt: Long?): Boolean {
+        if (staleExpiresAt == null) return false // an unleased claim never lapses
+        val renewed = leaseDeadline()
+        return connection { c ->
+            c.prepareStatement(
+                "UPDATE $TABLE SET expires_at = ? WHERE id = ? AND state = '$IN_PROGRESS' AND expires_at = ?",
+            ).use { ps ->
+                if (renewed == null) ps.setNull(1, Types.BIGINT) else ps.setLong(1, renewed)
+                ps.setString(2, key)
+                ps.setLong(3, staleExpiresAt)
+                ps.executeUpdate() == 1
+            }
+        }
+    }
+
+    /** The lease deadline for a claim taken now, or null when leasing is disabled ([Duration.INFINITE]). */
+    private fun leaseDeadline(): Long? =
+        if (lease == Duration.INFINITE) null else clock() + lease.inWholeMilliseconds
 
     private class Row(val state: String, val result: String?, val expiresAt: Long?) {
         fun isExpired(now: Long): Boolean = expiresAt != null && now >= expiresAt

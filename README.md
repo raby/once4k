@@ -63,12 +63,12 @@ reaches. Being honest about the edges:
   there is nothing to leak or block.
 - **`JdbcStore`** and **`RedisStore`** are shared, so the guarantee holds across instances, with two
   caveats common to any distributed store:
-  - A **crashed runner** leaves an in-flight marker. `RedisStore` gives the claim a lease so it frees
-    automatically; `JdbcStore` does not lease the claim in this version, so a crashed runner's row
-    blocks that key until it is cleared.
-  - If an action runs **longer than the claim lease**, another caller may reclaim the key and run it
+  - A **crashed runner** leaves an in-flight marker. Both stores lease the claim (default 5 minutes),
+    so it frees automatically and the next caller takes the key over — a crashed runner no longer
+    blocks its key.
+  - If an action runs **longer than the claim lease**, another caller may take the key over and run it
     a second time, so size the lease above your slowest action. Fencing tokens, so a late writer
-    cannot clobber a reclaimed key, are a planned addition.
+    cannot clobber a key that was taken over, are a planned addition.
 
 For a side effect that must be exactly-once even across these edges, write the idempotency result in
 the **same transaction** as the effect; the store SPI is shaped to allow that.

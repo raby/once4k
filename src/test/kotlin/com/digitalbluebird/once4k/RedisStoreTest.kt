@@ -165,4 +165,20 @@ class RedisStoreTest {
         runner.get(5, TimeUnit.SECONDS)
         pool.shutdown()
     }
+
+    @Test
+    fun `a crashed runner's claim is taken over once its lease lapses`() {
+        var now = 0L
+        val store = RedisStore(FakeRedisCommands(clock = { now }), lease = 1000.milliseconds)
+
+        // A runner claims the key, then "crashes" without ever succeeding or abandoning.
+        check(store.begin("k") == KeyState.New)
+        // While the lease still holds, another caller must wait rather than run.
+        assertThat(store.begin("k")).isEqualTo(KeyState.InProgress)
+
+        now = 1000 // the lease lapses; Redis drops the in-flight key
+        val runs = AtomicInteger(0)
+        assertThat(Once(store).execute("k") { runs.incrementAndGet(); "recovered" }).isEqualTo("recovered")
+        assertThat(runs.get()).isEqualTo(1) // the next caller took the key over and ran it once
+    }
 }

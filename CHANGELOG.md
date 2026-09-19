@@ -16,7 +16,8 @@ All notable changes to once4k are recorded here. The format follows
   expiry, opportunistic sweeping, and a `size` / `purgeExpired()` for observability.
 - `JdbcStore`: idempotency state in one table, shared across processes; the atomic claim is an
   `INSERT` guarded by the primary key, in-flight callers poll via `await`, results go through a
-  pluggable codec, and completed keys expire by TTL.
+  pluggable codec, and completed keys expire by TTL. The in-progress claim is leased, so a crashed
+  runner's key is taken over by the next caller once the lease lapses.
 - `RedisStore`: idempotency state in Redis, shared across processes; the atomic claim is `SET NX`,
   TTL is delegated to Redis, and it runs against a small `RedisCommands` port with a `compileOnly`
   Jedis adapter (`JedisRedisCommands`).
