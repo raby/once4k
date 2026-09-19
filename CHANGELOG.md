@@ -6,6 +6,8 @@ All notable changes to once4k are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
 ### Added
 
 - **Claim fencing:** `begin` mints a `FenceToken` per claim (`KeyState.New(token)`); `succeed` /
@@ -46,5 +48,6 @@ All notable changes to once4k are recorded here. The format follows
 - GitHub Actions CI (build + test), and a JMH microbenchmark (~30 ns cache hit).
 - Maven Central (Central Portal) publishing configuration — see [PUBLISHING.md](PUBLISHING.md).
 
-[Unreleased]: https://github.com/raby/once4k/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/raby/once4k/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/raby/once4k/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/raby/once4k/releases/tag/v0.1.0
