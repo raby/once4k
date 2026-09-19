@@ -13,3 +13,4 @@ h2 = { module = "com.h2database:h2", version.ref = "h2" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+maven-publish = { id = "com.vanniktech.maven.publish", version = "0.30.0" }
