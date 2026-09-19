@@ -16,13 +16,13 @@ Idempotency is easy to describe and subtle to get right: two requests race, an i
 to be de-duplicated, a result has to be replayed, and a failure must not poison the key forever.
 Services hand-roll this badly. `once4k` is a small, correct, well-tested core with a pluggable store.
 
-## Example (target API)
+## Example
 
 ```kotlin
 val once = Once(InMemoryStore())
 
 val charge = once.execute("charge:order-42") {
-    paymentGateway.charge(order)   // runs exactly once for this key
+    paymentGateway.charge(order)   // runs once for this key
 }
 // a second call with "charge:order-42" returns the first charge, and never charges again
 ```
@@ -37,9 +37,6 @@ val charge = once.execute("charge:order-42") {
   can try again, and a concurrent caller takes over rather than all failing.
 - **Keys expire**: a completed key replays its result for a configurable TTL (default 24h), then
   re-runs; expired entries are reclaimed so the in-memory store does not grow without bound.
-
-For true exactly-once with an external side effect, record the result in the same transaction as the
-effect (an advanced pattern the store SPI is designed to allow).
 
 ## Stores
 
@@ -56,6 +53,25 @@ effect (an advanced pattern the store SPI is designed to allow).
 
 A store only has to implement the small `IdempotencyStore` SPI (`begin` / `succeed` / `abandon` /
 `await`), so a distributed cache or a bespoke backend slots in the same way.
+
+## Consistency and limitations
+
+The guarantee is **at-most-once execution for a successful result**, as far as the chosen store
+reaches. Being honest about the edges:
+
+- **`InMemoryStore`** is exactly-once within one JVM. If the process dies its state dies with it, so
+  there is nothing to leak or block.
+- **`JdbcStore`** and **`RedisStore`** are shared, so the guarantee holds across instances, with two
+  caveats common to any distributed store:
+  - A **crashed runner** leaves an in-flight marker. `RedisStore` gives the claim a lease so it frees
+    automatically; `JdbcStore` does not lease the claim in this version, so a crashed runner's row
+    blocks that key until it is cleared.
+  - If an action runs **longer than the claim lease**, another caller may reclaim the key and run it
+    a second time, so size the lease above your slowest action. Fencing tokens, so a late writer
+    cannot clobber a reclaimed key, are a planned addition.
+
+For a side effect that must be exactly-once even across these edges, write the idempotency result in
+the **same transaction** as the effect; the store SPI is shaped to allow that.
 
 ## Spring
 

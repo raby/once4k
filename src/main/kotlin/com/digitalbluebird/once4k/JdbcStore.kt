@@ -22,6 +22,9 @@ import kotlin.time.Duration.Companion.seconds
  * A completed key replays for [ttl] (default 24h) and then re-runs. [await] polls for an in-flight
  * key held by another process, up to [awaitTimeout], before reporting [AwaitOutcome.Retry]. [clock]
  * (epoch millis, for expiry) is injectable for testing.
+ *
+ * The in-progress claim is not leased in this version, so a crashed runner's row blocks its key until
+ * cleared. See the Consistency section of the README.
  */
 public class JdbcStore(
     private val dataSource: DataSource,

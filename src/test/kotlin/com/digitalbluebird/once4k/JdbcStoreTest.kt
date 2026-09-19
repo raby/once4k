@@ -3,6 +3,7 @@ package com.digitalbluebird.once4k
 import assertk.assertThat
 import assertk.assertions.hasSize
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNull
 import org.h2.jdbcx.JdbcDataSource
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -48,6 +49,15 @@ class JdbcStoreTest {
         val once = Once(store())
         assertThat(once.execute("a") { "A" }).isEqualTo("A")
         assertThat(once.execute("b") { "B" }).isEqualTo("B")
+    }
+
+    @Test
+    fun `a null result is cached, distinct from an in-progress row`() {
+        val once = Once(store())
+        val runs = AtomicInteger(0)
+        assertThat(once.execute<String?>("k") { runs.incrementAndGet(); null }).isNull()
+        assertThat(once.execute<String?>("k") { runs.incrementAndGet(); "not-null" }).isNull()
+        assertThat(runs.get()).isEqualTo(1)
     }
 
     @Test
