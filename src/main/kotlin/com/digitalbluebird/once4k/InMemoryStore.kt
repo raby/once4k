@@ -3,6 +3,9 @@ package com.digitalbluebird.once4k
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 
 /**
  * An in-memory [IdempotencyStore] backed by a [ConcurrentHashMap] of per-key futures. Correct within
@@ -13,41 +16,92 @@ import java.util.concurrent.ConcurrentHashMap
  * and completes the future; concurrent callers await it. A failed action removes the entry and
  * completes its future exceptionally, waking waiters to retry.
  *
- * Completed entries persist so their result can replay, so the map grows with the number of distinct
- * successful keys; a size bound or per-entry TTL is a later addition.
+ * A completed key replays its result only for [ttl]; after that it re-runs. Expired entries are
+ * reclaimed lazily when a key is next seen, and swept opportunistically as keys are begun, so the map
+ * does not grow without bound. An in-flight entry never expires while its action is running. [clock]
+ * (epoch millis) is injectable for testing; it defaults to the wall clock.
  */
-public class InMemoryStore : IdempotencyStore {
-    private val slots = ConcurrentHashMap<String, CompletableFuture<Any?>>()
+public class InMemoryStore(
+    private val ttl: Duration = 24.hours,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : IdempotencyStore {
+
+    private class Slot {
+        val future = CompletableFuture<Any?>()
+
+        /** When the completed result stops replaying; [Long.MAX_VALUE] while in-flight or never-expiring. */
+        @Volatile
+        var expiresAt: Long = Long.MAX_VALUE
+    }
+
+    private val slots = ConcurrentHashMap<String, Slot>()
+    private val opsSinceSweep = AtomicInteger(0)
 
     override fun begin(key: String): KeyState {
+        maybeSweep()
         while (true) {
-            val fresh = CompletableFuture<Any?>()
+            val fresh = Slot()
             val existing = slots.putIfAbsent(key, fresh) ?: return KeyState.New
-            if (!existing.isDone) return KeyState.InProgress
+            if (!existing.future.isDone) return KeyState.InProgress
+            if (isExpired(existing)) {
+                slots.remove(key, existing) // stale result: drop it and reclaim the key
+                continue
+            }
             try {
-                return KeyState.Done(existing.join())
+                return KeyState.Done(existing.future.join())
             } catch (e: CompletionException) {
-                // The runner abandoned this key; drop the dead entry and loop to reclaim it.
-                slots.remove(key, existing)
+                slots.remove(key, existing) // the runner abandoned this key
             }
         }
     }
 
     override fun succeed(key: String, result: Any?) {
-        slots[key]?.complete(result)
+        val slot = slots[key] ?: return
+        slot.expiresAt = expiryFrom(clock()) // set before completing, so a racing reader sees it
+        slot.future.complete(result)
     }
 
     override fun abandon(key: String) {
-        slots.remove(key)?.completeExceptionally(AbandonedException())
+        slots.remove(key)?.future?.completeExceptionally(AbandonedException())
     }
 
     override fun await(key: String): AwaitOutcome {
         val slot = slots[key] ?: return AwaitOutcome.Retry // already gone (abandoned or expired)
         return try {
-            AwaitOutcome.Ready(slot.join())
+            AwaitOutcome.Ready(slot.future.join())
         } catch (e: CompletionException) {
             AwaitOutcome.Retry
         }
+    }
+
+    /** Number of keys currently tracked (in-flight or completed-and-unexpired). Useful for metrics. */
+    public val size: Int
+        get() = slots.size
+
+    /** Remove every completed entry whose [ttl] has elapsed. Returns how many were removed. */
+    public fun purgeExpired(): Int {
+        var removed = 0
+        for ((key, slot) in slots) {
+            if (slot.future.isDone && isExpired(slot) && slots.remove(key, slot)) removed++
+        }
+        return removed
+    }
+
+    private fun isExpired(slot: Slot): Boolean = clock() >= slot.expiresAt
+
+    private fun expiryFrom(now: Long): Long =
+        if (ttl == Duration.INFINITE) Long.MAX_VALUE else now + ttl.inWholeMilliseconds
+
+    /** Amortised, thread-free cleanup: sweep expired entries once every [SWEEP_INTERVAL] begins. */
+    private fun maybeSweep() {
+        if (opsSinceSweep.incrementAndGet() >= SWEEP_INTERVAL) {
+            opsSinceSweep.set(0)
+            purgeExpired()
+        }
+    }
+
+    private companion object {
+        const val SWEEP_INTERVAL = 512
     }
 }
 
