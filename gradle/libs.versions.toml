@@ -6,6 +6,7 @@ h2 = "2.2.224"
 jedis = "5.1.0"
 spring = "6.1.14"
 aspectj = "1.9.22.1"
+jmhPlugin = "0.7.2"
 
 [libraries]
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
@@ -21,3 +22,4 @@ aspectjweaver = { module = "org.aspectj:aspectjweaver", version.ref = "aspectj" 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 maven-publish = { id = "com.vanniktech.maven.publish", version = "0.30.0" }
+jmh = { id = "me.champeau.jmh", version.ref = "jmhPlugin" }

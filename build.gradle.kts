@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     `java-library`
     alias(libs.plugins.maven.publish)
+    alias(libs.plugins.jmh)
 }
 
 group = "com.digitalbluebird"
@@ -80,10 +81,12 @@ tasks.test {
     useJUnitPlatform()
 }
 
-// Run the indicative microbenchmark: ./gradlew benchmark
-tasks.register<JavaExec>("benchmark") {
-    group = "verification"
-    description = "Run the indicative once4k microbenchmark."
-    classpath = sourceSets["test"].runtimeClasspath
-    mainClass.set("com.digitalbluebird.once4k.benchmark.BenchmarkKt")
+// JMH microbenchmarks live in src/jmh; run them with: ./gradlew jmh
+jmh {
+    jmhVersion.set("1.37")
+    warmupIterations.set(3)
+    iterations.set(5)
+    fork.set(2)
+    warmup.set("1s")
+    timeOnIteration.set("1s")
 }

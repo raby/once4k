@@ -88,10 +88,11 @@ Register `IdempotentAspect` and a `Once` bean, with `@EnableAspectJAutoProxy`. S
 
 ## Benchmark
 
-`./gradlew benchmark` runs an indicative harness (JIT warmup, best of five rounds, results kept
-live). A **cache hit** — an idempotency check when the key already exists, the common case for a
-retry or a de-duplicated request — costs about **30 ns** (~33M/sec) with the in-memory store, so the
-guarantee is essentially free on the hot path. (Figures are indicative and machine-dependent.)
+`./gradlew jmh` runs the [JMH](https://github.com/openjdk/jmh) microbenchmark in `src/jmh`. A **cache
+hit** — an idempotency check when the key already exists, the common case for a retry or a
+de-duplicated request — measures about **29 ns/op** (JMH average time, 2 forks × 5 iterations, ±2.5),
+roughly **34M checks/sec** with the in-memory store, so the guarantee is essentially free on the hot
+path. (Figures are machine-dependent; these are from a developer laptop.)
 
 ## Building
 
