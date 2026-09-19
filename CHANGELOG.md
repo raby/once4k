@@ -6,6 +6,8 @@ All notable changes to once4k are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-19
+
 ### Added
 
 - `Once.execute(key) { … }`: runs an action at most once per idempotency key, replaying the stored
@@ -24,7 +26,8 @@ All notable changes to once4k are recorded here. The format follows
 - Spring integration: an `@Idempotent` aspect (`IdempotentAspect`) that wraps a method so it runs at
   most once per key, with the key as a SpEL expression over the arguments. Spring and AspectJ are
   `compileOnly`.
-- GitHub Actions CI (build + test).
+- GitHub Actions CI (build + test), and a JMH microbenchmark (~30 ns cache hit).
 - Maven Central (Central Portal) publishing configuration — see [PUBLISHING.md](PUBLISHING.md).
 
-[Unreleased]: https://github.com/raby/once4k/commits/main
+[Unreleased]: https://github.com/raby/once4k/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/raby/once4k/releases/tag/v0.1.0
