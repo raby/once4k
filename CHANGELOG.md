@@ -20,6 +20,9 @@ All notable changes to once4k are recorded here. The format follows
 - `RedisStore`: idempotency state in Redis, shared across processes; the atomic claim is `SET NX`,
   TTL is delegated to Redis, and it runs against a small `RedisCommands` port with a `compileOnly`
   Jedis adapter (`JedisRedisCommands`).
+- Spring integration: an `@Idempotent` aspect (`IdempotentAspect`) that wraps a method so it runs at
+  most once per key, with the key as a SpEL expression over the arguments. Spring and AspectJ are
+  `compileOnly`.
 - GitHub Actions CI (build + test).
 - Maven Central (Central Portal) publishing configuration — see [PUBLISHING.md](PUBLISHING.md).
 

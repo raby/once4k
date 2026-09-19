@@ -49,6 +49,10 @@ mavenPublishing {
 kotlin {
     jvmToolchain(21)
     explicitApi()
+    compilerOptions {
+        // Emit method parameter names so Spring's SpEL can resolve #paramName in @Idempotent keys.
+        javaParameters = true
+    }
 }
 
 dependencies {
@@ -56,11 +60,19 @@ dependencies {
     // different store (in-memory, JDBC) never pull it in. Add it yourself to use RedisStore with Jedis.
     compileOnly(libs.jedis)
 
+    // Spring + AspectJ back the optional @Idempotent aspect; a Spring app already provides them, and a
+    // non-Spring caller pulls in nothing. Add them yourself to use the aspect.
+    compileOnly(libs.spring.context)
+    compileOnly(libs.aspectjweaver)
+
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(kotlin("test-junit5"))
     testImplementation(libs.assertk)
     testImplementation(libs.h2) // an in-memory JDBC database for the JdbcStore tests
+    testImplementation(libs.spring.context) // a real Spring context for the @Idempotent aspect test
+    testImplementation(libs.spring.test)
+    testImplementation(libs.aspectjweaver)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

@@ -7,7 +7,7 @@ classic double-tap on a slow network) returns the first result instead of doing 
 concurrent callers with the same key collapse to a single execution.
 
 > **Status: early / work in progress.** The core executor, an in-memory store (with TTL expiry), a
-> JDBC store and a Redis store are in, with concurrency tests. A Spring integration is next. Not yet
+> JDBC store, a Redis store, and a Spring `@Idempotent` aspect are in, with concurrency tests. Not yet
 > published to Maven Central.
 
 ## Why
@@ -56,6 +56,19 @@ effect (an advanced pattern the store SPI is designed to allow).
 
 A store only has to implement the small `IdempotencyStore` SPI (`begin` / `succeed` / `abandon` /
 `await`), so a distributed cache or a bespoke backend slots in the same way.
+
+## Spring
+
+An optional `@Idempotent` aspect wraps a method so it runs at most once per key, with the key given
+as a SpEL expression over the arguments:
+
+```kotlin
+@Idempotent(key = "'charge:' + #order.id")
+fun charge(order: Order): Receipt = gateway.charge(order)
+```
+
+Register `IdempotentAspect` and a `Once` bean, with `@EnableAspectJAutoProxy`. Spring and AspectJ are
+`compileOnly`, so a non-Spring caller pulls in nothing.
 
 ## Benchmark
 

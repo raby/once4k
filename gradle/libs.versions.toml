@@ -4,6 +4,8 @@ junit = "5.11.4"
 assertk = "0.28.1"
 h2 = "2.2.224"
 jedis = "5.1.0"
+spring = "6.1.14"
+aspectj = "1.9.22.1"
 
 [libraries]
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
@@ -12,6 +14,9 @@ junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher
 assertk = { module = "com.willowtreeapps.assertk:assertk", version.ref = "assertk" }
 h2 = { module = "com.h2database:h2", version.ref = "h2" }
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
+spring-context = { module = "org.springframework:spring-context", version.ref = "spring" }
+spring-test = { module = "org.springframework:spring-test", version.ref = "spring" }
+aspectjweaver = { module = "org.aspectj:aspectjweaver", version.ref = "aspectj" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
