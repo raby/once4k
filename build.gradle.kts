@@ -20,6 +20,7 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(kotlin("test-junit5"))
     testImplementation(libs.assertk)
+    testImplementation(libs.h2) // an in-memory JDBC database for the JdbcStore tests
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

@@ -6,9 +6,9 @@ Wrap a side-effecting operation in `execute(key) { … }` and it runs **once** p
 classic double-tap on a slow network) returns the first result instead of doing the work again, and
 concurrent callers with the same key collapse to a single execution.
 
-> **Status: early / work in progress.** The core executor and an in-memory store (with TTL expiry)
-> are in, with concurrency tests. Pluggable stores (JDBC, Redis) and a Spring integration are next.
-> Not yet published.
+> **Status: early / work in progress.** The core executor, an in-memory store (with TTL expiry) and a
+> JDBC store are in, with concurrency tests. A Redis store and a Spring integration are next. Not yet
+> published.
 
 ## Why
 
@@ -40,6 +40,18 @@ val charge = once.execute("charge:order-42") {
 
 For true exactly-once with an external side effect, record the result in the same transaction as the
 effect (an advanced pattern the store SPI is designed to allow).
+
+## Stores
+
+- **`InMemoryStore`** — a `ConcurrentHashMap` of per-key futures; correct within one process, with
+  TTL expiry.
+- **`JdbcStore`** — idempotency state in one table, shared across processes. The atomic claim is an
+  `INSERT` guarded by the primary key, so concurrent callers on a fresh key resolve to one runner;
+  results are stored via a codec (`String` and `null` by default, or supply your own for richer
+  types). Call `initSchema()` at startup, and pass a pooled `DataSource`.
+
+A store only has to implement the small `IdempotencyStore` SPI (`begin` / `succeed` / `abandon` /
+`await`), so Redis, a distributed cache, or a bespoke backend slots in the same way.
 
 ## Building
 
